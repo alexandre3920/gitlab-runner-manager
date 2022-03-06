@@ -1,0 +1,8 @@
+---
+gitlab_conf:
+  url: "https://git.example."
+  token: "sEcr3tT0ken"
+  repository_name: "my-repository"
+  runner_version: "latest"
+  tags: "docker,python"
+
