@@ -1,3 +1,7 @@
-# Ignore yaml config file and certificates
-*.yaml
+# Ignore config files and certificates
+*.conf
 *.crt
+
+# Reinclude example.conf
+!example.conf
+
