@@ -5,24 +5,12 @@
 # during script running
 DEBUG="false"
 
-# Colors
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[0;33m'
-WHITE='\033[0;37m'
-RESET='\033[0m'
-
 # Emojies
 GREEN_CHECK_EMOJI='✅'
 RED_CROSS_EMOJI='❌'
 YELLOW_DOT_EMOJI='🟡'
-TOOLS_EMOJI='🛠'
 
-
-# Set both actions to false
-register_runner="false"
-unregister_runner="false"
-list_registered_runners="false"
+# Settings default value
 use_ca_cert_file="false"
 
 # Save the config file name
@@ -44,31 +32,59 @@ fi
 # ANSI color in text stream
 # See : https://superuser.com/questions/380772/removing-ansi-color-codes-from-text-stream
 function remove_ansi_color_codes() {
-    if (( $# == 0 )) ; then
-        sed -e $'s/\x1b\[[0-9;]*m//g' < /dev/stdin
-        echo
-    else
-        sed -e $'s/\x1b\[[0-9;]*m//g' <<< "$1"
-        echo
-    fi
+    sed -e $'s/\x1b\[[0-9;]*m//g' < /dev/stdin
+    echo
 }
 
-# https://gist.github.com/masukomi/e587aa6fd4f042496871
-function parse_yaml {
-   local prefix=$2
-   local s='[[:space:]]*' w='[a-zA-Z0-9_]*' fs=$(echo @|tr @ '\034')
-   sed -ne "s|^\($s\):|\1|" \
-        -e "s|^\($s\)\($w\)$s:$s[\"']\(.*\)[\"']$s\$|\1$fs\2$fs\3|p" \
-        -e "s|^\($s\)\($w\)$s:$s\(.*\)$s\$|\1$fs\2$fs\3|p"  $1 |
-   awk -F$fs '{
-      indent = length($1)/2;
-      vname[indent] = $2;
-      for (i in vname) {if (i > indent) {delete vname[i]}}
-      if (length($3) > 0) {
-         vn=""; for (i=0; i<indent; i++) {vn=(vn)(vname[i])("_")}
-         printf("%s%s%s=\"%s\"\n", "'$prefix'",vn, $2, $3);
-      }
-   }'
+function _check_and_display_errors_and_fatals() {
+    # Get output from argument
+    output=$1
+    # Check for error or fatal
+    # in output
+    # Set custom IFS
+    oldif="${IFS}"; IFS=$'\n';
+    output_errors="$(echo "${output}" | awk '/ERROR:/ {print;}')"
+    output_fatals="$(echo "${output}" | awk '/FATAL:/ {print;}')"
+    # Print if there is error or fatal
+    if [[ "${output_errors}" != "" || "${output_fatals}" != "" ]]; then
+        echo -e " ${RED_CROSS_EMOJI}"
+    fi
+
+    # Display errors
+    if [[ "${output_errors}" != "" ]]; then
+        # For each error
+        for output_error in $output_errors; do
+            # Get error details
+            output_error_text="$(echo "${output_error}" | sed 's/^ERROR: \(.*\)runner=.*$/\1/' \
+                | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
+            output_error_status="$(echo "${output_error}" | awk '/status=/ {print $0}' | sed 's/^.*\(status=.*\)$/\1/' | awk -F'=' '{print $2}')"
+            if [[ "${output_error_status}" != "" ]]; then
+                echo -e "  - ${output_error_text} : ${output_error_status}"
+            else
+                echo -e "  - ${output_error_text}"
+            fi
+        done
+    fi
+
+    # Reset IFS
+    IFS=$oldif
+
+    # Display fatals
+    if [[ "${output_fatals}" != "" ]]; then
+        # For each fatal
+        for output_fatal in $output_fatals; do
+            # Get fatal details
+            output_fatal_text="$(echo "${output_fatal}" | sed 's/^FATAL: \(.*\)$/\1/' \
+                | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
+            echo -e "  - ${output_fatal_text}"
+        done
+    fi
+
+    # Exit 1 if there is error or fatal
+    if [[ "${output_errors}" != "" || "${output_fatals}" != "" ]]; then
+        exit 1
+    fi
+
 }
 
 # Function to display the usage
@@ -123,7 +139,7 @@ function _load_config_file() {
     display_configuration_hint="false"
     # Check if the file exists
     if [[ ! -e ${config_file_name} ]]; then
-        echo -e "[${RED_CROSS_EMOJI}] The configuration file '${config_file_name}' doesn't exist"
+        echo -e "> The configuration file '${config_file_name}' doesn't exist ${RED_CROSS_EMOJI}"
         exit 2
     fi
 
@@ -131,21 +147,22 @@ function _load_config_file() {
         echo -e "> Load configuration file : ${config_file_name} ..."
     fi
 
-    # Load variables to environment
-    eval "$(parse_yaml "${config_file_name}")"
+    # Load variables from the config file
+    # shellcheck source=/dev/null
+    source "${config_file_name}"
 
     # Check if all required variables are
     # define in the configuration
     if [[ -z "${gitlab_conf_url}" ]]; then
-        echo -e "${RED_CROSS_EMOJI} > There is no 'url' defined in your configuration"
+        echo -e "> There is no 'gitlab_conf_url' defined in your configuration ${RED_CROSS_EMOJI} "
         display_configuration_hint="true"
     fi
     if [[ -z "${gitlab_conf_token}" ]]; then
-        echo -e "${RED_CROSS_EMOJI} > There is no 'token' defined in your configuration"
+        echo -e "> There is no 'gitlab_conf_token' defined in your configuration ${RED_CROSS_EMOJI} "
         display_configuration_hint="true"
     fi
     if [[ -z "${gitlab_conf_repository_name}" ]]; then
-        echo -e "${RED_CROSS_EMOJI} > There is no 'repository_name' defined in your configuration"
+        echo -e "> There is no 'gitlab_conf_repository_name' defined in your configuration ${RED_CROSS_EMOJI} "
         display_configuration_hint="true"
     fi
     
@@ -154,16 +171,14 @@ function _load_config_file() {
         echo ""
         echo -e "Your configuration file should at least look like this :"
         echo -e "> cat ${config_file_name}"
-        echo -e "---"
-        echo -e "gitlab_conf:"
-        echo -e "  url:\"gitlab url\""
-        echo -e "  token:\"gitlab runner registration token\""
-        echo -e "  repository_name:\"repository name\""
+        echo -e "gitlab_conf_url=gitlab url"
+        echo -e "gitlab_conf_token=gitlab runner registration token"
+        echo -e "gitlab_conf_repository_name=repository name"
         echo -e ""
         echo -e "You can also specify :"
-        echo -e "  description: \"Runner for django-doctor-dashboard\""
-        echo -e "  runner_version: \"latest\""
-        echo -e "  tags: \"docker,python\""
+        echo -e "gitlab_conf_description=Runner for django-doctor-dashboard"
+        echo -e "gitlab_conf_runner_version=latest"
+        echo -e "gitlab_conf_tags=docker,python"
         exit 1
     fi
 
@@ -189,6 +204,11 @@ function _load_config_file() {
 
     if [[ ${DEBUG} = "true" ]]; then
         echo -e "> Configuration file loaded"
+        echo -e "  |_ url               : ${gitlab_conf_url}"
+        echo -e "  |_ token             : ${gitlab_conf_token}"
+        echo -e "  |_ repository name   : ${gitlab_conf_repository_name}"
+        echo -e "  |_ runner version    : ${gitlab_conf_runner_version}"
+        echo -e "  |_ tags              : ${gitlab_conf_tags}"
     fi
 }
 
@@ -237,7 +257,7 @@ function _parse_and_check_arguments() {
                 ;;
             ?)
                 # Catch invalid option
-                echo -e "[${RED}!${RESET}] Invalid option: -${OPTARG}"
+                echo -e "> Invalid option: -${OPTARG} ${RED_CROSS_EMOJI}"
                 _display_usage
                 exit 2
                 ;;
@@ -301,7 +321,7 @@ function _register_new_runner() {
         exit 1
     fi
 
-     # First I need to check if there is already
+    # First I need to check if there is already
     # a container with the $runner_name existing
     # which mean the runner has already been registered
     # and started once. Moreover, I can't create
@@ -377,51 +397,9 @@ function _register_new_runner() {
             --access-level="not_protected" 2>&1 | remove_ansi_color_codes)"
     fi
 
-    # Check for error or fatal
-    # in output
-    # Set custom IFS
-    oldif="${IFS}"; IFS=$'\n';
-    output_errors="$(echo "${output}" | awk '/ERROR:/ {print;}')"
-    output_fatals="$(echo "${output}" | awk '/FATAL:/ {print;}')"
-    # Print if there is error or fatal
-    if [[ "${output_errors}" != "" || "${output_fatals}" != "" ]]; then
-        echo -e " ${RED_CROSS_EMOJI}"
-    fi
-
-    # Display errors
-    if [[ "${output_errors}" != "" ]]; then
-        # For each error
-        for output_error in $output_errors; do
-            # Get error details
-            output_error_text="$(echo "${output_error}" | sed 's/^ERROR: \(.*\)runner=.*$/\1/' \
-                | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
-            output_error_status="$(echo "${output_error}" | awk '/status=/ {print $0}' | sed 's/^.*\(status=.*\)$/\1/' | awk -F'=' '{print $2}')"
-            if [[ "${output_error_status}" != "" ]]; then
-                echo -e "  - ${output_error_text} : ${output_error_status}"
-            else
-                echo -e "  - ${output_error_text}"
-            fi
-        done
-    fi
-
-    # Reset IFS
-    IFS=$oldif
-
-    # Display fatals
-    if [[ "${output_fatals}" != "" ]]; then
-        # For each fatal
-        for output_fatal in $output_fatals; do
-            # Get fatal details
-            output_fatal_text="$(echo "${output_fatal}" | sed 's/^FATAL: \(.*\)$/\1/' \
-                | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
-            echo -e "  - ${output_fatal_text}"
-        done
-    fi
-
-    # Exit 1 if there is error or fatal
-    if [[ "${output_errors}" != "" || "${output_fatals}" != "" ]]; then
-        exit 1
-    fi
+    # Check and display if there is any
+    # errors and fatals in the output
+    _check_and_display_errors_and_fatals "${output}"
 
     echo -e " ${GREEN_CHECK_EMOJI}"
 }
@@ -454,7 +432,7 @@ function _unregister_runner() {
             ;;
         ?)
             # Catch invalid option
-            echo -e "[${RED}!${RESET}] Invalid option: -${OPTARG}"
+            echo -e "> Invalid option: -${OPTARG} ${RED_CROSS_EMOJI}"
             _display_unregister_runner_usage
             exit 2
             ;;
@@ -518,51 +496,9 @@ function _unregister_runner() {
         fi
     fi
 
-    # Check for error or fatal
-    # in output
-    # Set custom IFS
-    oldif="${IFS}"; IFS=$'\n';
-    output_errors="$(echo "${output}" | awk '/ERROR:/ {print;}')"
-    output_fatals="$(echo "${output}" | awk '/FATAL:/ {print;}')"
-    # Print \n if there is error or fatal
-    if [[ "${output_errors}" != "" || "${output_fatals}" != "" ]]; then
-        echo -e " ${RED_CROSS_EMOJI}"
-    fi
-
-    # Display errors
-    if [[ "${output_errors}" != "" ]]; then
-        # For each error
-        for output_error in $output_errors; do
-            # Get error details
-            output_error_text="$(echo "${output_error}" | sed 's/^ERROR: \(.*\)runner=.*$/\1/' \
-                | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
-            output_error_status="$(echo "${output_error}" | awk '/status=/ {print $0}' | sed 's/^.*\(status=.*\)$/\1/' | awk -F'=' '{print $2}')"
-            if [[ "${output_error_status}" != "" ]]; then
-                echo -e "  - ${output_error_text} : ${output_error_status}"
-            else
-                echo -e "  - ${output_error_text}"
-            fi
-        done
-    fi
-
-    # Reset IFS
-    IFS=$oldif
-
-    # Display fatals
-    if [[ "${output_fatals}" != "" ]]; then
-        # For each fatal
-        for output_fatal in $output_fatals; do
-            # Get fatal details
-            output_fatal_text="$(echo "${output_fatal}" | sed 's/^FATAL: \(.*\)$/\1/' \
-                | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
-            echo -e "  - ${output_fatal_text}"
-        done
-    fi
-
-    # Exit 1 if there is error or fatal
-    if [[ "${output_errors}" != "" || "${output_fatals}" != "" ]]; then
-        exit 1
-    fi
+    # Check and display if there is any
+    # errors and fatals in the output
+    _check_and_display_errors_and_fatals "${output}"
 
     # Else display green check
     echo -e " ${GREEN_CHECK_EMOJI}"
@@ -663,10 +599,7 @@ function _list_registered_runners() {
             THIRD_COLUMN_WIDTH=10
             FOURTH_COLUMN_WIDTH=20
             FIFTH_COLUMN_WIDTH=20
-            TABLE_WIDTH=$((FIRST_COLUMN_WIDTH + SECOND_COLUMN_WIDTH + THIRD_COLUMN_WIDTH \
-                + FOURTH_COLUMN_WIDTH + FIFTH_COLUMN_WIDTH))
             ROW_SEPARATOR="+-$(printf '%0.s-' $(seq 1 $FIRST_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $SECOND_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $THIRD_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $FOURTH_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $FIFTH_COLUMN_WIDTH))-+"
-            ROW="| %-${FIRST_COLUMN_WIDTH}s | %-${SECOND_COLUMN_WIDTH}s | %-${THIRD_COLUMN_WIDTH}s | %-${FOURTH_COLUMN_WIDTH}s | %-${FIFTH_COLUMN_WIDTH}s |\n"
 
             # Get runtime platform details
             runtime_plateform_arch=$(echo "${runtime_plateform}" | awk '{print $3}' \
@@ -683,9 +616,11 @@ function _list_registered_runners() {
             # Display runtime platform table
             echo -e "> Runtime plateform :"
             echo "${ROW_SEPARATOR}"
-            printf  "${ROW}" Arch OS PID Revision Version
+            printf  "| %-${FIRST_COLUMN_WIDTH}s | %-${SECOND_COLUMN_WIDTH}s | %-${THIRD_COLUMN_WIDTH}s | %-${FOURTH_COLUMN_WIDTH}s | %-${FIFTH_COLUMN_WIDTH}s |\n" \
+                "Arch" "OS" "PID" "Revision" "Version"
             echo "${ROW_SEPARATOR}"
-            printf  "${ROW}" "${runtime_plateform_arch:0:${FIRST_COLUMN_WIDTH}}" \
+            printf  "| %-${FIRST_COLUMN_WIDTH}s | %-${SECOND_COLUMN_WIDTH}s | %-${THIRD_COLUMN_WIDTH}s | %-${FOURTH_COLUMN_WIDTH}s | %-${FIFTH_COLUMN_WIDTH}s |\n" \
+                "${runtime_plateform_arch:0:${FIRST_COLUMN_WIDTH}}" \
                 "${runtime_plateform_os:0:${SECOND_COLUMN_WIDTH}}" \
                 "${runtime_plateform_pid:0:${THIRD_COLUMN_WIDTH}}" \
                 "${runtime_plateform_revision:0:${FOURTH_COLUMN_WIDTH}}" \
@@ -699,9 +634,7 @@ function _list_registered_runners() {
         SECOND_COLUMN_WIDTH=20
         THIRD_COLUMN_WIDTH=25
         FOURTH_COLUMN_WIDTH=30
-        TABLE_WIDTH=$((FIRST_COLUMN_WIDTH + SECOND_COLUMN_WIDTH + THIRD_COLUMN_WIDTH + FOURTH_COLUMN_WIDTH))
         ROW_SEPARATOR="+-$(printf '%0.s-' $(seq 1 $FIRST_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $SECOND_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $THIRD_COLUMN_WIDTH))-+-$(printf '%0.s-' $(seq 1 $FOURTH_COLUMN_WIDTH))-+"
-        ROW="| %-${FIRST_COLUMN_WIDTH}s | %-${SECOND_COLUMN_WIDTH}s | %-${THIRD_COLUMN_WIDTH}s | %-${FOURTH_COLUMN_WIDTH}s |\n"
 
         # Get list of runners
         # Set custom IFS
@@ -715,14 +648,12 @@ function _list_registered_runners() {
         else
             echo -e "> List of runners :"
             echo "${ROW_SEPARATOR}"
-            printf  "${ROW}" "Name" "Executor" "Token" "URL"
+            printf "| %-${FIRST_COLUMN_WIDTH}s | %-${SECOND_COLUMN_WIDTH}s | %-${THIRD_COLUMN_WIDTH}s | %-${FOURTH_COLUMN_WIDTH}s |\n" \
+                "Name" "Executor" "Token" "URL"
             echo "${ROW_SEPARATOR}"
 
             # For each runner in the list
             for runner in $runners; do
-
-                #echo -e "'$runner'"
-
                 # Get runner details
                 runner_name="$(echo "${runner}" | sed 's/^\(.*\)Executor.*$/\1/' \
                     | awk '{ gsub(/^[ \t]+|[ \t]+$/, ""); print}')"
@@ -733,7 +664,8 @@ function _list_registered_runners() {
                 runner_url="$(echo "${runner}" | sed 's/^.*\(URL.*\)$/\1/' | awk -F'=' '{print $2}')"
 
                 # And print a new row                
-                printf  "${ROW}" "${runner_name:0:${FIRST_COLUMN_WIDTH}}" \
+                printf  "| %-${FIRST_COLUMN_WIDTH}s | %-${SECOND_COLUMN_WIDTH}s | %-${THIRD_COLUMN_WIDTH}s | %-${FOURTH_COLUMN_WIDTH}s |\n" \
+                    "${runner_name:0:${FIRST_COLUMN_WIDTH}}" \
                     "${runner_executor:0:${SECOND_COLUMN_WIDTH}}" \
                     "${runner_token:0:${THIRD_COLUMN_WIDTH}}" \
                     "${runner_url:0:${FOURTH_COLUMN_WIDTH}}"
